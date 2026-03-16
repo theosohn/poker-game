@@ -1,19 +1,24 @@
-'use client'; // This tells Next.js this page uses interactive elements (buttons/typing)
+'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation'; // <-- We added this
 import { supabase } from '../../utils/supabase';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
+  
+  const router = useRouter(); // <-- We initialize the router here
 
   const handleSignUp = async () => {
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) {
       setMessage(`Error: ${error.message}`);
     } else {
-      setMessage('Success! Check your email to confirm your account.');
+      setMessage('Success! Redirecting to the lobby...');
+      // Automatically redirect to the play page
+      router.push('/play'); 
     }
   };
 
@@ -22,7 +27,9 @@ export default function LoginPage() {
     if (error) {
       setMessage(`Error: ${error.message}`);
     } else {
-      setMessage('Successfully logged in! Welcome to the poker tables.');
+      setMessage('Successfully logged in! Redirecting...');
+      // Automatically redirect to the play page
+      router.push('/play'); 
     }
   };
 
@@ -36,7 +43,7 @@ export default function LoginPage() {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="w-full p-2 mb-4 text-black rounded"
+          className="w-full p-2 mb-4 text-black rounded outline-none"
         />
         
         <input
@@ -44,26 +51,25 @@ export default function LoginPage() {
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full p-2 mb-6 text-black rounded"
+          className="w-full p-2 mb-6 text-black rounded outline-none"
         />
         
         <div className="flex justify-between gap-4">
           <button 
             onClick={handleLogin}
-            className="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded font-bold"
+            className="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded font-bold transition-colors"
           >
             Log In
           </button>
           
           <button 
             onClick={handleSignUp}
-            className="w-full bg-green-600 hover:bg-green-700 py-2 rounded font-bold"
+            className="w-full bg-green-600 hover:bg-green-700 py-2 rounded font-bold transition-colors"
           >
             Sign Up
           </button>
         </div>
 
-        {/* This will show success or error messages to the user */}
         {message && <p className="mt-4 text-center text-sm text-yellow-400">{message}</p>}
       </div>
     </div>
