@@ -162,4 +162,174 @@ export default function PlayPage() {
     // Check if everyone active has matched the highest bet
     const isRoundOver = activePlayers.every(p => p.current_bet === newHighestBet) && activePlayers.length > 1;
     
-    //
+    // Check if everyone else folded
+    const isWinnerDetermined = activePlayers.length === 1;
+
+    let newDeck = typeof tableState.deck === 'string' ? JSON.parse(tableState.deck) : tableState.deck;
+    let newCommunityCards = typeof tableState.community_cards === 'string' ? JSON.parse(tableState.community_cards) : tableState.community_cards;
+    let newStage = tableState.game_stage;
+    let nextTurnPlayerId = null;
+
+    if (isWinnerDetermined) {
+      newStage = 'showdown';
+      // Next step we will add logic here to give the winner the pot
+    } 
+    else if (isRoundOver) {
+      // Advance to the next street!
+      if (newStage === 'preflop') { newStage = 'flop'; newCommunityCards.push(newDeck.pop(), newDeck.pop(), newDeck.pop()); }
+      else if (newStage === 'flop') { newStage = 'turn'; newCommunityCards.push(newDeck.pop()); }
+      else if (newStage === 'turn') { newStage = 'river'; newCommunityCards.push(newDeck.pop()); }
+      else if (newStage === 'river') { newStage = 'showdown'; }
+
+      // Reset bets to 0 for the new round
+      await supabase.from('table_players').update({ current_bet: 0 }).eq('table_id', tableId).eq('status', 'active');
+      newHighestBet = 0;
+      nextTurnPlayerId = activePlayers[0].player_id; // Simple reset to first active player
+    } 
+    else {
+      // Round isn't over, just pass to the next active player
+      const myIndex = futurePlayers.findIndex(p => p.player_id === userId);
+      for (let i = 1; i < futurePlayers.length; i++) {
+        const checkIndex = (myIndex + i) % futurePlayers.length;
+        if (futurePlayers[checkIndex].status === 'active') {
+          nextTurnPlayerId = futurePlayers[checkIndex].player_id;
+          break;
+        }
+      }
+    }
+
+    // Update the master table state
+    await supabase.from('poker_tables').update({
+      pot: newPot,
+      highest_bet: newHighestBet,
+      current_turn_player_id: nextTurnPlayerId,
+      game_stage: newStage,
+      deck: newDeck,
+      community_cards: newCommunityCards
+    }).eq('id', tableId);
+  };
+
+  const parseJSON = (data) => typeof data === 'string' ? JSON.parse(data) : (data || []);
+
+  if (tableId && tableState) {
+    const myPlayer = playersState.find(p => p.player_id === userId);
+    const opponents = playersState.filter(p => p.player_id !== userId);
+    const isMyTurn = tableState.current_turn_player_id === userId;
+    const myHoleCards = myPlayer ? parseJSON(myPlayer.hole_cards) : [];
+    const communityCards = parseJSON(tableState.community_cards);
+    
+    // Dynamic Raise calculation based on highest bet
+    const minRaise = tableState.highest_bet > 0 ? tableState.highest_bet * 2 : 10;
+
+    return (
+      <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
+        
+        {/* Opponents */}
+        <div className="flex flex-wrap justify-center gap-8 mb-8">
+          {opponents.map((opp, i) => (
+            <div key={i} className={`bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 ${tableState.current_turn_player_id === opp.player_id ? 'border-yellow-400' : 'border-green-700'}`}>
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-sm text-neutral-400">Seat {opp.seat_number}</p>
+                {/* Labels for Blinds */}
+                {opp.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
+                {opp.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
+              </div>
+              <p className="font-bold">Chips: {opp.chips}</p>
+              {opp.current_bet > 0 && <p className="text-xs mt-1 text-yellow-400">Bet: {opp.current_bet}</p>}
+              {opp.status === 'folded' && <p className="text-xs mt-1 text-red-400 font-bold">FOLDED</p>}
+            </div>
+          ))}
+        </div>
+
+        {/* The Board */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="bg-green-900/50 px-8 py-4 rounded-full mb-6 border border-green-700">
+            <h2 className="text-2xl font-bold text-yellow-400">Pot: {tableState.pot}</h2>
+            <p className="text-center text-sm text-neutral-300 uppercase tracking-widest">{tableState.game_stage}</p>
+          </div>
+          
+          <div className="flex gap-2">
+            {communityCards.length > 0 ? (
+              communityCards.map((card, index) => (
+                <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-neutral-300">
+                  {card}
+                </div>
+              ))
+            ) : (
+              <div className="text-neutral-400 italic">No community cards yet</div>
+            )}
+          </div>
+        </div>
+
+        {/* Player UI */}
+        {myPlayer && (
+          <div className={`w-full max-w-2xl bg-neutral-900 p-6 rounded-t-2xl shadow-2xl border-t-4 ${isMyTurn ? 'border-yellow-400' : 'border-neutral-700'}`}>
+            <div className="flex justify-between items-end">
+              
+              <div>
+                <div className="flex gap-2 items-center mb-2">
+                  <p className="text-sm text-neutral-400">My Stack: <span className="text-white font-bold">{myPlayer.chips}</span></p>
+                  {myPlayer.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
+                  {myPlayer.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
+                </div>
+                <div className="flex gap-2">
+                  {myHoleCards.map((card, index) => (
+                    <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-blue-500">
+                      {card}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col items-end gap-3">
+                {isMyTurn ? (
+                  <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
+                ) : (
+                  <div className="text-neutral-500 font-bold mb-1">Waiting for turn...</div>
+                )}
+                
+                <div className="flex gap-3">
+                  <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
+                    Fold
+                  </button>
+                  <button onClick={() => processAction('call')} disabled={!isMyTurn || myPlayer.current_bet === tableState.highest_bet} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
+                    Call {tableState.highest_bet > myPlayer.current_bet ? (tableState.highest_bet - myPlayer.current_bet) : ''}
+                  </button>
+                  <div className="flex overflow-hidden rounded shadow-lg">
+                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
+                      Raise To
+                    </button>
+                    <input 
+                      type="number" 
+                      value={raiseAmount}
+                      onChange={(e) => setRaiseAmount(Number(e.target.value))}
+                      disabled={!isMyTurn} 
+                      className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" 
+                    />
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-neutral-900 text-white p-4">
+      <div className="bg-neutral-800 p-8 rounded shadow-md w-full max-w-sm text-center">
+        <h1 className="text-3xl font-bold mb-6">Texas Hold'em</h1>
+        {!inQueue ? (
+          <button onClick={joinQueue} className="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded font-bold text-xl transition-colors">Play Now</button>
+        ) : (
+          <div>
+            <div className="animate-pulse text-yellow-400 text-xl font-bold mb-4">Searching for table...</div>
+            <p className="text-neutral-400 mb-2">Players in queue: {queueCount}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
