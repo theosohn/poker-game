@@ -56,6 +56,55 @@ export default function PlayPage() {
     await supabase.from('queue').delete().in('player_id', playerIds);
   };
 
+  // === LEAVE TABLE ENGINE ===
+  const leaveTable = async (isIntentional = true) => {
+    if (!tableId || !userId) return;
+
+    if (isIntentional) {
+      const confirmLeave = window.confirm("Are you sure you want to leave? You will lose any chips currently bet in this hand.");
+      if (!confirmLeave) return;
+    }
+
+    const { data: currentPlayers } = await supabase.from('table_players').select('*').eq('table_id', tableId);
+    const { data: currentTable } = await supabase.from('poker_tables').select('*').eq('id', tableId).single();
+
+    if (!currentPlayers || !currentTable) {
+      setTableId(null);
+      setTableState(null);
+      return;
+    }
+
+    const remainingPlayers = currentPlayers.filter(p => p.player_id !== userId && p.chips > 0);
+
+    if (remainingPlayers.length < 2) {
+      // Less than 2 players remain, table collapses
+      if (remainingPlayers.length === 1 && currentTable.pot > 0) {
+        console.log(`EVENT: Player ${remainingPlayers[0].player_id} won ${currentTable.pot} chips by default because everyone else left!`);
+      }
+      await supabase.from('table_players').delete().eq('table_id', tableId);
+      await supabase.from('poker_tables').delete().eq('id', tableId);
+    } else {
+      // 2+ players remain, pass the turn if necessary and ghost the leaving player
+      let nextTurnPlayerId = currentTable.current_turn_player_id;
+      if (nextTurnPlayerId === userId) {
+        const myIndex = currentPlayers.findIndex(p => p.player_id === userId);
+        for (let i = 1; i < currentPlayers.length; i++) {
+          const checkIndex = (myIndex + i) % currentPlayers.length;
+          if (currentPlayers[checkIndex].status === 'active' && currentPlayers[checkIndex].player_id !== userId) {
+            nextTurnPlayerId = currentPlayers[checkIndex].player_id;
+            break;
+          }
+        }
+        await supabase.from('poker_tables').update({ current_turn_player_id: nextTurnPlayerId }).eq('id', tableId);
+      }
+      // Set to folded and 0 chips so they are ignored by the game engine and skipped next hand
+      await supabase.from('table_players').update({ status: 'folded', chips: 0 }).eq('player_id', userId);
+    }
+
+    setTableId(null);
+    setTableState(null);
+  };
+
   useEffect(() => {
     if (!userId) return;
     const tableSub = supabase.channel('table_inserts')
@@ -83,6 +132,11 @@ export default function PlayPage() {
 
   useEffect(() => {
     if (!tableId) return;
+
+    // Detect browser tab closing
+    const handleUnload = () => leaveTable(false);
+    window.addEventListener('beforeunload', handleUnload);
+
     const fetchGame = async () => {
       const { data: t } = await supabase.from('poker_tables').select('*').eq('id', tableId).single();
       setTableState(t);
@@ -95,10 +149,19 @@ export default function PlayPage() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'poker_tables', filter: `id=eq.${tableId}` }, (payload) => setTableState(payload.new))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'table_players', filter: `table_id=eq.${tableId}` }, () => {
         supabase.from('table_players').select('*').eq('table_id', tableId).order('seat_number').then(({data}) => setPlayersState(data));
+      })
+      // Listen for the table being destroyed so we get kicked back to lobby automatically
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'poker_tables', filter: `id=eq.${tableId}` }, () => {
+        alert("The table was closed because not enough players remain.");
+        setTableId(null);
+        setTableState(null);
       }).subscribe();
 
-    return () => supabase.removeChannel(gameSub);
-  }, [tableId]);
+    return () => {
+      supabase.removeChannel(gameSub);
+      window.removeEventListener('beforeunload', handleUnload);
+    };
+  }, [tableId, userId]);
 
   const joinQueue = async () => {
     if (!userId) return alert("Please log in first!");
@@ -179,11 +242,9 @@ export default function PlayPage() {
     }
   };
 
-  // === NEXT HAND ENGINE ===
   const startNextHand = async () => {
     if (tableState.game_stage !== 'showdown') return;
 
-    // 1. Fetch current players (excluding those who busted out with < 10 chips)
     const { data: currentPlayers } = await supabase.from('table_players').select('*').eq('table_id', tableId).order('seat_number');
     const validPlayers = currentPlayers.filter(p => p.chips >= 10);
     
@@ -192,17 +253,15 @@ export default function PlayPage() {
       return; 
     }
 
-    // 2. Rotate Seats (Seat 1 shifts to the back of the line)
     const sortedPlayers = [...validPlayers].sort((a, b) => a.seat_number - b.seat_number);
     const oldDealer = sortedPlayers.shift();
     sortedPlayers.push(oldDealer);
 
     const rotatedPlayers = sortedPlayers.map((p, index) => ({
       ...p,
-      seat_number: index + 1 // Reassign seats 1 to N sequentially
+      seat_number: index + 1 
     }));
 
-    // 3. Deal New Cards & Deduct Blinds
     const deck = getShuffledDeck();
     const isHeadsUp = rotatedPlayers.length === 2;
     const firstTurnIndex = isHeadsUp ? 0 : (rotatedPlayers.length > 2 ? 2 : 0);
@@ -214,15 +273,14 @@ export default function PlayPage() {
       let chips = p.chips;
       let currentBet = 0;
 
-      if (p.seat_number === 1) { chips -= 5; currentBet = 5; } // Small Blind
-      if (p.seat_number === 2) { chips -= 10; currentBet = 10; } // Big Blind
+      if (p.seat_number === 1) { chips -= 5; currentBet = 5; } 
+      if (p.seat_number === 2) { chips -= 10; currentBet = 10; } 
 
       await supabase.from('table_players').update({
         seat_number: p.seat_number, hole_cards: holeCards, chips: chips, current_bet: currentBet, status: 'active', has_acted: false
       }).eq('id', p.id);
     }
 
-    // 4. Reset the Master Table State
     await supabase.from('poker_tables').update({
       pot: 15, highest_bet: 10, game_stage: 'preflop', community_cards: [],
       deck: deck.slice(rotatedPlayers.length * 2), current_turn_player_id: firstTurnPlayerId
@@ -233,15 +291,23 @@ export default function PlayPage() {
 
   if (tableId && tableState) {
     const myPlayer = playersState.find(p => p.player_id === userId);
-    const opponents = playersState.filter(p => p.player_id !== userId);
+    // Hide opponents who have left the table entirely (0 chips and folded)
+    const opponents = playersState.filter(p => p.player_id !== userId && !(p.chips === 0 && p.status === 'folded'));
     const isMyTurn = tableState.current_turn_player_id === userId && tableState.game_stage !== 'showdown';
     const myHoleCards = myPlayer ? parseJSON(myPlayer.hole_cards) : [];
     const communityCards = parseJSON(tableState.community_cards);
     const canCheck = myPlayer && tableState.highest_bet === myPlayer.current_bet;
 
     return (
-      <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
+      <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4 relative">
         
+        {/* LEAVE BUTTON */}
+        <div className="absolute top-4 left-4 z-50">
+          <button onClick={() => leaveTable(true)} className="bg-red-800 hover:bg-red-900 text-white px-4 py-2 rounded shadow-lg border-2 border-red-700 font-bold transition-colors">
+            Leave Table
+          </button>
+        </div>
+
         {tableState.game_stage === 'showdown' && (
           <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/90 p-8 rounded-2xl border-4 border-yellow-500 z-50 text-center animate-bounce shadow-2xl">
             <h2 className="text-4xl font-bold text-yellow-400 mb-2">SHOWDOWN</h2>
@@ -249,7 +315,7 @@ export default function PlayPage() {
           </div>
         )}
 
-        <div className="flex flex-wrap justify-center gap-8 mb-8">
+        <div className="flex flex-wrap justify-center gap-8 mb-8 mt-12">
           {opponents.map((opp, i) => (
             <div key={i} className={`bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 ${tableState.current_turn_player_id === opp.player_id && tableState.game_stage !== 'showdown' ? 'border-yellow-400' : 'border-green-700'}`}>
               <div className="flex justify-between items-center mb-1">
@@ -311,7 +377,6 @@ export default function PlayPage() {
 
               <div className="flex flex-col items-end gap-3">
                 {tableState.game_stage === 'showdown' ? (
-                  /* SHOWDOWN UI - Only Seat 1 can trigger the next hand */
                   <div className="flex flex-col items-end">
                     {myPlayer.seat_number === 1 ? (
                       <button onClick={startNextHand} className="bg-purple-600 hover:bg-purple-700 px-8 py-4 rounded-xl font-bold transition-colors animate-pulse text-xl shadow-lg border-2 border-purple-400">
@@ -324,7 +389,6 @@ export default function PlayPage() {
                     )}
                   </div>
                 ) : (
-                  /* REGULAR PLAYING UI */
                   <>
                     {isMyTurn ? (
                       <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
