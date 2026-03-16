@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../utils/supabase';
 import { getShuffledDeck } from '../../utils/deck';
-import { handleShowdown } from '../../utils/gameLogic'; // <-- We imported your new logic!
+import { handleShowdown } from '../../utils/gameLogic';
 
 export default function PlayPage() {
   const [inQueue, setInQueue] = useState(false);
@@ -12,7 +12,9 @@ export default function PlayPage() {
   const [userId, setUserId] = useState(null);
   const [tableState, setTableState] = useState(null);
   const [playersState, setPlayersState] = useState([]);
-  const [raiseAmount, setRaiseAmount] = useState(20);
+  
+  // Default the raise input to 10 (the size of the big blind)
+  const [raiseAmount, setRaiseAmount] = useState(10);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -121,14 +123,28 @@ export default function PlayPage() {
       myNewChips -= callAmount; myNewBet += callAmount; newPot += callAmount;
     } 
     else if (actionType === 'raise') {
-      const totalToPutIn = betAmount - me.current_bet;
-      myNewChips -= totalToPutIn; myNewBet = betAmount; newHighestBet = betAmount; newPot += totalToPutIn;
+      // 1. Minimum raise check
+      if (betAmount < 1) {
+        alert("You must raise by at least 1 chip!");
+        return; 
+      }
+
+      // 2. Calculate the target bet ("Raise By" logic)
+      const targetBet = newHighestBet + betAmount;
+      const totalToPutIn = targetBet - me.current_bet;
+      
+      // 3. Prevent raising with chips you don't have
+      if (totalToPutIn > myNewChips) {
+        alert("You don't have enough chips for that raise!");
+        return;
+      }
+
+      myNewChips -= totalToPutIn; myNewBet = targetBet; newHighestBet = targetBet; newPot += totalToPutIn;
       await supabase.from('table_players').update({ has_acted: false }).eq('table_id', tableId).neq('player_id', userId);
     }
 
     await supabase.from('table_players').update({ chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed }).eq('id', me.id);
 
-    // THE BUG FIX: If you raise, force the future local state to show opponents haven't acted
     const futurePlayers = playersState.map(p => {
       if (p.player_id === userId) return { ...p, chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed };
       return { ...p, has_acted: actionType === 'raise' ? false : p.has_acted };
@@ -165,7 +181,6 @@ export default function PlayPage() {
       }
     }
 
-    // Call showdown logic if the game is over
     if (newStage === 'showdown') {
       await handleShowdown(tableId, futurePlayers, newCommunityCards, newPot);
     } else {
@@ -208,7 +223,6 @@ export default function PlayPage() {
               {opp.current_bet > 0 && <p className="text-xs mt-1 text-yellow-400">Bet: {opp.current_bet}</p>}
               {opp.status === 'folded' && <p className="text-xs mt-1 text-red-400 font-bold">FOLDED</p>}
               
-              {/* Show opponent cards ONLY at showdown if they didn't fold */}
               {tableState.game_stage === 'showdown' && opp.status !== 'folded' && (
                 <div className="flex gap-1 mt-2 justify-center">
                   {parseJSON(opp.hole_cards).map((card, index) => (
@@ -274,8 +288,17 @@ export default function PlayPage() {
                     </button>
                   )}
                   <div className="flex overflow-hidden rounded shadow-lg">
-                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">Raise To</button>
-                    <input type="number" value={raiseAmount} onChange={(e) => setRaiseAmount(Number(e.target.value))} disabled={!isMyTurn} className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" />
+                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
+                      Raise By
+                    </button>
+                    <input 
+                      type="number" 
+                      min="1"
+                      value={raiseAmount} 
+                      onChange={(e) => setRaiseAmount(Number(e.target.value))} 
+                      disabled={!isMyTurn} 
+                      className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" 
+                    />
                   </div>
                 </div>
               </div>
