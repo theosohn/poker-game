@@ -121,12 +121,109 @@ export default function PlayPage() {
     setQueueCount(count);
   };
 
-  // If assigned a table, show the game room
+  const handleFold = () => { console.log("Fold clicked"); /* Logic coming next */ };
+  const handleCall = () => { console.log("Call clicked"); /* Logic coming next */ };
+  const handleRaise = () => { console.log("Raise clicked"); /* Logic coming next */ };
+
+  // If assigned a table, show the Game Room
   if (tableId) {
+    // Hardcoded dummy data for the visual MVP (we will connect this to Supabase next)
+    const dummyPot = 150;
+    const dummyCommunityCards = ['As', 'Kd', 'Tc']; // Ace of Spades, King of Diamonds, Ten of Clubs
+    const myHoleCards = ['Ah', 'Ah']; // Pocket Aces!
+    const myChips = 1000;
+    const isMyTurn = true; // Pretend it's your turn
+
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-green-800 text-white">
-        <h1 className="text-2xl mb-4 font-bold">Table ID: {tableId}</h1>
-        <p className="animate-pulse">Dealing cards...</p>
+      <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
+        
+        {/* Top: Opponents (Simplified) */}
+        <div className="flex gap-8 mb-8">
+          <div className="bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 border-green-700">
+            <p className="text-sm text-neutral-400">Opponent 1</p>
+            <p className="font-bold">Chips: 950</p>
+            <p className="text-xs mt-1 text-yellow-400">Bet: 10</p>
+          </div>
+        </div>
+
+        {/* Middle: The Board */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="bg-green-900/50 px-8 py-4 rounded-full mb-6 border border-green-700">
+            <h2 className="text-2xl font-bold text-yellow-400">Pot: {dummyPot}</h2>
+          </div>
+          
+          <div className="flex gap-2">
+            {dummyCommunityCards.length > 0 ? (
+              dummyCommunityCards.map((card, index) => (
+                <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-neutral-300">
+                  {card}
+                </div>
+              ))
+            ) : (
+              <div className="text-neutral-400 italic">Preflop - No community cards yet</div>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom: Player UI */}
+        <div className="w-full max-w-2xl bg-neutral-900 p-6 rounded-t-2xl shadow-2xl border-t-4 border-neutral-700">
+          <div className="flex justify-between items-end">
+            
+            {/* My Cards & Stats */}
+            <div>
+              <p className="text-sm text-neutral-400 mb-2">My Stack: <span className="text-white font-bold">{myChips}</span></p>
+              <div className="flex gap-2">
+                {myHoleCards.map((card, index) => (
+                  <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-blue-500">
+                    {card}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col items-end gap-3">
+              {isMyTurn ? (
+                <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
+              ) : (
+                <div className="text-neutral-500 font-bold mb-1">Waiting for opponent...</div>
+              )}
+              
+              <div className="flex gap-3">
+                <button 
+                  onClick={handleFold}
+                  disabled={!isMyTurn}
+                  className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded font-bold transition-colors"
+                >
+                  Fold
+                </button>
+                <button 
+                  onClick={handleCall}
+                  disabled={!isMyTurn}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 rounded font-bold transition-colors"
+                >
+                  Call
+                </button>
+                <div className="flex overflow-hidden rounded shadow-lg">
+                  <button 
+                    onClick={handleRaise}
+                    disabled={!isMyTurn}
+                    className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 disabled:cursor-not-allowed px-6 py-3 font-bold transition-colors"
+                  >
+                    Raise
+                  </button>
+                  <input 
+                    type="number" 
+                    defaultValue={20}
+                    disabled={!isMyTurn}
+                    className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" 
+                  />
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
       </div>
     );
   }
