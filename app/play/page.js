@@ -5,6 +5,15 @@ import { supabase } from '../../utils/supabase';
 import { getShuffledDeck } from '../../utils/deck';
 import { handleShowdown } from '../../utils/gameLogic';
 
+// === NEW: Helper function to get real card images ===
+const getCardImageUrl = (card) => {
+  if (!card) return '';
+  // The API uses '0' for 10s (e.g., '0C.png' instead of 'TC.png')
+  const value = card[0] === 'T' ? '0' : card[0].toUpperCase();
+  const suit = card[1].toUpperCase();
+  return `https://deckofcardsapi.com/static/img/${value}${suit}.png`;
+};
+
 export default function PlayPage() {
   const [inQueue, setInQueue] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
@@ -56,7 +65,6 @@ export default function PlayPage() {
     await supabase.from('queue').delete().in('player_id', playerIds);
   };
 
-  // === LEAVE TABLE ENGINE ===
   const leaveTable = async (isIntentional = true) => {
     if (!tableId || !userId) return;
 
@@ -77,14 +85,12 @@ export default function PlayPage() {
     const remainingPlayers = currentPlayers.filter(p => p.player_id !== userId && p.chips > 0);
 
     if (remainingPlayers.length < 2) {
-      // Less than 2 players remain, table collapses
       if (remainingPlayers.length === 1 && currentTable.pot > 0) {
         console.log(`EVENT: Player ${remainingPlayers[0].player_id} won ${currentTable.pot} chips by default because everyone else left!`);
       }
       await supabase.from('table_players').delete().eq('table_id', tableId);
       await supabase.from('poker_tables').delete().eq('id', tableId);
     } else {
-      // 2+ players remain, pass the turn if necessary and ghost the leaving player
       let nextTurnPlayerId = currentTable.current_turn_player_id;
       if (nextTurnPlayerId === userId) {
         const myIndex = currentPlayers.findIndex(p => p.player_id === userId);
@@ -97,7 +103,6 @@ export default function PlayPage() {
         }
         await supabase.from('poker_tables').update({ current_turn_player_id: nextTurnPlayerId }).eq('id', tableId);
       }
-      // Set to folded and 0 chips so they are ignored by the game engine and skipped next hand
       await supabase.from('table_players').update({ status: 'folded', chips: 0 }).eq('player_id', userId);
     }
 
@@ -133,7 +138,6 @@ export default function PlayPage() {
   useEffect(() => {
     if (!tableId) return;
 
-    // Detect browser tab closing
     const handleUnload = () => leaveTable(false);
     window.addEventListener('beforeunload', handleUnload);
 
@@ -150,7 +154,6 @@ export default function PlayPage() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'table_players', filter: `table_id=eq.${tableId}` }, () => {
         supabase.from('table_players').select('*').eq('table_id', tableId).order('seat_number').then(({data}) => setPlayersState(data));
       })
-      // Listen for the table being destroyed so we get kicked back to lobby automatically
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'poker_tables', filter: `id=eq.${tableId}` }, () => {
         alert("The table was closed because not enough players remain.");
         setTableId(null);
@@ -257,10 +260,7 @@ export default function PlayPage() {
     const oldDealer = sortedPlayers.shift();
     sortedPlayers.push(oldDealer);
 
-    const rotatedPlayers = sortedPlayers.map((p, index) => ({
-      ...p,
-      seat_number: index + 1 
-    }));
+    const rotatedPlayers = sortedPlayers.map((p, index) => ({ ...p, seat_number: index + 1 }));
 
     const deck = getShuffledDeck();
     const isHeadsUp = rotatedPlayers.length === 2;
@@ -291,7 +291,6 @@ export default function PlayPage() {
 
   if (tableId && tableState) {
     const myPlayer = playersState.find(p => p.player_id === userId);
-    // Hide opponents who have left the table entirely (0 chips and folded)
     const opponents = playersState.filter(p => p.player_id !== userId && !(p.chips === 0 && p.status === 'folded'));
     const isMyTurn = tableState.current_turn_player_id === userId && tableState.game_stage !== 'showdown';
     const myHoleCards = myPlayer ? parseJSON(myPlayer.hole_cards) : [];
@@ -301,7 +300,6 @@ export default function PlayPage() {
     return (
       <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4 relative">
         
-        {/* LEAVE BUTTON */}
         <div className="absolute top-4 left-4 z-50">
           <button onClick={() => leaveTable(true)} className="bg-red-800 hover:bg-red-900 text-white px-4 py-2 rounded shadow-lg border-2 border-red-700 font-bold transition-colors">
             Leave Table
@@ -328,9 +326,10 @@ export default function PlayPage() {
               {opp.status === 'folded' && <p className="text-xs mt-1 text-red-400 font-bold">FOLDED</p>}
               
               {tableState.game_stage === 'showdown' && opp.status !== 'folded' && (
-                <div className="flex gap-1 mt-2 justify-center">
+                <div className="flex gap-2 mt-3 justify-center">
+                  {/* REAL IMAGES FOR OPPONENTS */}
                   {parseJSON(opp.hole_cards).map((card, index) => (
-                    <div key={index} className="bg-white text-black w-8 h-12 flex items-center justify-center text-sm font-bold rounded shadow">{card}</div>
+                    <img key={index} src={getCardImageUrl(card)} alt={card} className="w-10 h-14 object-contain drop-shadow-md" />
                   ))}
                 </div>
               )}
@@ -346,10 +345,9 @@ export default function PlayPage() {
           
           <div className="flex gap-2 min-h-[6rem]">
             {communityCards.length > 0 ? (
+              // REAL IMAGES FOR COMMUNITY CARDS
               communityCards.map((card, index) => (
-                <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-neutral-300">
-                  {card}
-                </div>
+                <img key={index} src={getCardImageUrl(card)} alt={card} className="w-16 h-24 object-contain drop-shadow-xl" />
               ))
             ) : (
               <div className="text-neutral-400 italic mt-4">Preflop</div>
@@ -367,10 +365,9 @@ export default function PlayPage() {
                   {myPlayer.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
                 </div>
                 <div className="flex gap-2">
+                  {/* REAL IMAGES FOR MY HOLE CARDS */}
                   {myHoleCards.map((card, index) => (
-                    <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-blue-500">
-                      {card}
-                    </div>
+                    <img key={index} src={getCardImageUrl(card)} alt={card} className="w-16 h-24 object-contain drop-shadow-xl" />
                   ))}
                 </div>
               </div>
