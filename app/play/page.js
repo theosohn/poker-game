@@ -53,7 +53,7 @@ export default function PlayPage() {
 
       return {
         table_id: tableData.id, player_id: p.player_id, seat_number: index + 1,
-        chips: chips, current_bet: currentBet, hole_cards: holeCards, status: 'active'
+        chips: chips, current_bet: currentBet, hole_cards: holeCards, status: 'active', has_acted: false
       };
     });
 
@@ -122,7 +122,6 @@ export default function PlayPage() {
     setQueueCount(count);
   };
 
-  // === THE GAME ENGINE LOGIC ===
   const processAction = async (actionType, betAmount = 0) => {
     if (!tableState || !playersState.length) return;
 
@@ -132,37 +131,33 @@ export default function PlayPage() {
     let myNewStatus = me.status;
     let newHighestBet = tableState.highest_bet;
     let newPot = tableState.pot;
+    let myNewHasActed = true; // They are taking an action!
 
-    // 1. Process the math for the specific action
     if (actionType === 'fold') {
       myNewStatus = 'folded';
-    } 
-    else if (actionType === 'call') {
+    } else if (actionType === 'call' || actionType === 'check') {
       const callAmount = newHighestBet - me.current_bet;
       myNewChips -= callAmount;
       myNewBet += callAmount;
       newPot += callAmount;
-    } 
-    else if (actionType === 'raise') {
-      const totalToPutIn = betAmount - me.current_bet; // e.g. raising TO 20
+    } else if (actionType === 'raise') {
+      const totalToPutIn = betAmount - me.current_bet;
       myNewChips -= totalToPutIn;
       myNewBet = betAmount;
       newHighestBet = betAmount;
       newPot += totalToPutIn;
+      
+      // If you raise, everyone else now needs to act again to match it
+      await supabase.from('table_players').update({ has_acted: false }).eq('table_id', tableId).neq('player_id', userId);
     }
 
-    // Update my player in DB instantly
-    await supabase.from('table_players').update({ chips: myNewChips, current_bet: myNewBet, status: myNewStatus }).eq('id', me.id);
+    await supabase.from('table_players').update({ chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed }).eq('id', me.id);
 
-    // 2. Determine Next Turn & Round State
-    // Create a simulated future array of players to check if the round is over
-    const futurePlayers = playersState.map(p => p.player_id === userId ? { ...p, chips: myNewChips, current_bet: myNewBet, status: myNewStatus } : p);
+    const futurePlayers = playersState.map(p => p.player_id === userId ? { ...p, chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed } : p);
     const activePlayers = futurePlayers.filter(p => p.status === 'active');
     
-    // Check if everyone active has matched the highest bet
-    const isRoundOver = activePlayers.every(p => p.current_bet === newHighestBet) && activePlayers.length > 1;
-    
-    // Check if everyone else folded
+    // THE FIX: Round is only over if everyone matches the bet AND everyone has acted
+    const isRoundOver = activePlayers.every(p => p.current_bet === newHighestBet && p.has_acted) && activePlayers.length > 1;
     const isWinnerDetermined = activePlayers.length === 1;
 
     let newDeck = typeof tableState.deck === 'string' ? JSON.parse(tableState.deck) : tableState.deck;
@@ -172,22 +167,17 @@ export default function PlayPage() {
 
     if (isWinnerDetermined) {
       newStage = 'showdown';
-      // Next step we will add logic here to give the winner the pot
-    } 
-    else if (isRoundOver) {
-      // Advance to the next street!
+    } else if (isRoundOver) {
       if (newStage === 'preflop') { newStage = 'flop'; newCommunityCards.push(newDeck.pop(), newDeck.pop(), newDeck.pop()); }
       else if (newStage === 'flop') { newStage = 'turn'; newCommunityCards.push(newDeck.pop()); }
       else if (newStage === 'turn') { newStage = 'river'; newCommunityCards.push(newDeck.pop()); }
       else if (newStage === 'river') { newStage = 'showdown'; }
 
-      // Reset bets to 0 for the new round
-      await supabase.from('table_players').update({ current_bet: 0 }).eq('table_id', tableId).eq('status', 'active');
+      // Reset bets and actions for the new round
+      await supabase.from('table_players').update({ current_bet: 0, has_acted: false }).eq('table_id', tableId).eq('status', 'active');
       newHighestBet = 0;
-      nextTurnPlayerId = activePlayers[0].player_id; // Simple reset to first active player
-    } 
-    else {
-      // Round isn't over, just pass to the next active player
+      nextTurnPlayerId = activePlayers[0].player_id; 
+    } else {
       const myIndex = futurePlayers.findIndex(p => p.player_id === userId);
       for (let i = 1; i < futurePlayers.length; i++) {
         const checkIndex = (myIndex + i) % futurePlayers.length;
@@ -198,14 +188,9 @@ export default function PlayPage() {
       }
     }
 
-    // Update the master table state
     await supabase.from('poker_tables').update({
-      pot: newPot,
-      highest_bet: newHighestBet,
-      current_turn_player_id: nextTurnPlayerId,
-      game_stage: newStage,
-      deck: newDeck,
-      community_cards: newCommunityCards
+      pot: newPot, highest_bet: newHighestBet, current_turn_player_id: nextTurnPlayerId,
+      game_stage: newStage, deck: newDeck, community_cards: newCommunityCards
     }).eq('id', tableId);
   };
 
@@ -218,19 +203,17 @@ export default function PlayPage() {
     const myHoleCards = myPlayer ? parseJSON(myPlayer.hole_cards) : [];
     const communityCards = parseJSON(tableState.community_cards);
     
-    // Dynamic Raise calculation based on highest bet
-    const minRaise = tableState.highest_bet > 0 ? tableState.highest_bet * 2 : 10;
+    // Dynamic Call/Check button
+    const canCheck = myPlayer && tableState.highest_bet === myPlayer.current_bet;
 
     return (
       <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
         
-        {/* Opponents */}
         <div className="flex flex-wrap justify-center gap-8 mb-8">
           {opponents.map((opp, i) => (
             <div key={i} className={`bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 ${tableState.current_turn_player_id === opp.player_id ? 'border-yellow-400' : 'border-green-700'}`}>
               <div className="flex justify-between items-center mb-1">
                 <p className="text-sm text-neutral-400">Seat {opp.seat_number}</p>
-                {/* Labels for Blinds */}
                 {opp.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
                 {opp.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
               </div>
@@ -241,7 +224,6 @@ export default function PlayPage() {
           ))}
         </div>
 
-        {/* The Board */}
         <div className="flex flex-col items-center mb-8">
           <div className="bg-green-900/50 px-8 py-4 rounded-full mb-6 border border-green-700">
             <h2 className="text-2xl font-bold text-yellow-400">Pot: {tableState.pot}</h2>
@@ -256,12 +238,11 @@ export default function PlayPage() {
                 </div>
               ))
             ) : (
-              <div className="text-neutral-400 italic">No community cards yet</div>
+              <div className="text-neutral-400 italic">Preflop</div>
             )}
           </div>
         </div>
 
-        {/* Player UI */}
         {myPlayer && (
           <div className={`w-full max-w-2xl bg-neutral-900 p-6 rounded-t-2xl shadow-2xl border-t-4 ${isMyTurn ? 'border-yellow-400' : 'border-neutral-700'}`}>
             <div className="flex justify-between items-end">
@@ -292,9 +273,18 @@ export default function PlayPage() {
                   <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
                     Fold
                   </button>
-                  <button onClick={() => processAction('call')} disabled={!isMyTurn || myPlayer.current_bet === tableState.highest_bet} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
-                    Call {tableState.highest_bet > myPlayer.current_bet ? (tableState.highest_bet - myPlayer.current_bet) : ''}
-                  </button>
+                  
+                  {/* Dynamic Call/Check Button */}
+                  {canCheck ? (
+                    <button onClick={() => processAction('check')} disabled={!isMyTurn} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
+                      Check
+                    </button>
+                  ) : (
+                    <button onClick={() => processAction('call')} disabled={!isMyTurn} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
+                      Call {tableState.highest_bet - myPlayer.current_bet}
+                    </button>
+                  )}
+
                   <div className="flex overflow-hidden rounded shadow-lg">
                     <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
                       Raise To
