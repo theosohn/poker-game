@@ -3,17 +3,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../utils/supabase';
 import { getShuffledDeck } from '../../utils/deck';
+import { handleShowdown } from '../../utils/gameLogic'; // <-- We imported your new logic!
 
 export default function PlayPage() {
   const [inQueue, setInQueue] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [tableId, setTableId] = useState(null);
   const [userId, setUserId] = useState(null);
-  
   const [tableState, setTableState] = useState(null);
   const [playersState, setPlayersState] = useState([]);
   const [raiseAmount, setRaiseAmount] = useState(20);
-  
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -36,10 +35,7 @@ export default function PlayPage() {
 
     const { data: tableData, error } = await supabase
       .from('poker_tables')
-      .insert([{ 
-        status: 'active', player_count: playersToJoin.length, pot: 15, highest_bet: 10,
-        game_stage: 'preflop', current_turn_player_id: firstTurnPlayerId, deck: deck.slice(playersToJoin.length * 2) 
-      }])
+      .insert([{ status: 'active', player_count: playersToJoin.length, pot: 15, highest_bet: 10, game_stage: 'preflop', current_turn_player_id: firstTurnPlayerId, deck: deck.slice(playersToJoin.length * 2) }])
       .select().single();
 
     if (error) return console.error(error);
@@ -51,10 +47,7 @@ export default function PlayPage() {
       if (index === 0) { chips = 995; currentBet = 5; } 
       if (index === 1) { chips = 990; currentBet = 10; } 
 
-      return {
-        table_id: tableData.id, player_id: p.player_id, seat_number: index + 1,
-        chips: chips, current_bet: currentBet, hole_cards: holeCards, status: 'active', has_acted: false
-      };
+      return { table_id: tableData.id, player_id: p.player_id, seat_number: index + 1, chips: chips, current_bet: currentBet, hole_cards: holeCards, status: 'active', has_acted: false };
     });
 
     await supabase.from('table_players').insert(playersToInsert);
@@ -64,18 +57,14 @@ export default function PlayPage() {
 
   useEffect(() => {
     if (!userId) return;
-
     const tableSub = supabase.channel('table_inserts')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'table_players' }, (payload) => {
-        if (payload.new.player_id === userId) { setTableId(payload.new.table_id); setInQueue(false); }
-      }).subscribe();
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'table_players' }, (payload) => { if (payload.new.player_id === userId) { setTableId(payload.new.table_id); setInQueue(false); } }).subscribe();
 
     const queueSub = supabase.channel('queue_changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'queue' }, async () => {
         const { data: currentQueue } = await supabase.from('queue').select('*').order('joined_at', { ascending: true });
         if (!currentQueue) return;
         setQueueCount(currentQueue.length);
-
         if (currentQueue.length >= 5) {
           if (timerRef.current) clearTimeout(timerRef.current);
           if (currentQueue[currentQueue.length - 1].player_id === userId) startMatch(currentQueue.slice(0, 5));
@@ -86,17 +75,13 @@ export default function PlayPage() {
               startMatch(finalQueue);
             }, 30000);
           }
-        } else {
-          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-        }
+        } else { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } }
       }).subscribe();
-
     return () => { supabase.removeChannel(tableSub); supabase.removeChannel(queueSub); };
   }, [userId]);
 
   useEffect(() => {
     if (!tableId) return;
-
     const fetchGame = async () => {
       const { data: t } = await supabase.from('poker_tables').select('*').eq('id', tableId).single();
       setTableState(t);
@@ -126,37 +111,30 @@ export default function PlayPage() {
     if (!tableState || !playersState.length) return;
 
     const me = playersState.find(p => p.player_id === userId);
-    let myNewChips = me.chips;
-    let myNewBet = me.current_bet;
-    let myNewStatus = me.status;
-    let newHighestBet = tableState.highest_bet;
-    let newPot = tableState.pot;
-    let myNewHasActed = true; // They are taking an action!
+    let myNewChips = me.chips; let myNewBet = me.current_bet; let myNewStatus = me.status;
+    let newHighestBet = tableState.highest_bet; let newPot = tableState.pot;
+    let myNewHasActed = true;
 
-    if (actionType === 'fold') {
-      myNewStatus = 'folded';
-    } else if (actionType === 'call' || actionType === 'check') {
+    if (actionType === 'fold') { myNewStatus = 'folded'; } 
+    else if (actionType === 'call' || actionType === 'check') {
       const callAmount = newHighestBet - me.current_bet;
-      myNewChips -= callAmount;
-      myNewBet += callAmount;
-      newPot += callAmount;
-    } else if (actionType === 'raise') {
+      myNewChips -= callAmount; myNewBet += callAmount; newPot += callAmount;
+    } 
+    else if (actionType === 'raise') {
       const totalToPutIn = betAmount - me.current_bet;
-      myNewChips -= totalToPutIn;
-      myNewBet = betAmount;
-      newHighestBet = betAmount;
-      newPot += totalToPutIn;
-      
-      // If you raise, everyone else now needs to act again to match it
+      myNewChips -= totalToPutIn; myNewBet = betAmount; newHighestBet = betAmount; newPot += totalToPutIn;
       await supabase.from('table_players').update({ has_acted: false }).eq('table_id', tableId).neq('player_id', userId);
     }
 
     await supabase.from('table_players').update({ chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed }).eq('id', me.id);
 
-    const futurePlayers = playersState.map(p => p.player_id === userId ? { ...p, chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed } : p);
+    // THE BUG FIX: If you raise, force the future local state to show opponents haven't acted
+    const futurePlayers = playersState.map(p => {
+      if (p.player_id === userId) return { ...p, chips: myNewChips, current_bet: myNewBet, status: myNewStatus, has_acted: myNewHasActed };
+      return { ...p, has_acted: actionType === 'raise' ? false : p.has_acted };
+    });
+
     const activePlayers = futurePlayers.filter(p => p.status === 'active');
-    
-    // THE FIX: Round is only over if everyone matches the bet AND everyone has acted
     const isRoundOver = activePlayers.every(p => p.current_bet === newHighestBet && p.has_acted) && activePlayers.length > 1;
     const isWinnerDetermined = activePlayers.length === 1;
 
@@ -173,7 +151,6 @@ export default function PlayPage() {
       else if (newStage === 'turn') { newStage = 'river'; newCommunityCards.push(newDeck.pop()); }
       else if (newStage === 'river') { newStage = 'showdown'; }
 
-      // Reset bets and actions for the new round
       await supabase.from('table_players').update({ current_bet: 0, has_acted: false }).eq('table_id', tableId).eq('status', 'active');
       newHighestBet = 0;
       nextTurnPlayerId = activePlayers[0].player_id; 
@@ -188,10 +165,15 @@ export default function PlayPage() {
       }
     }
 
-    await supabase.from('poker_tables').update({
-      pot: newPot, highest_bet: newHighestBet, current_turn_player_id: nextTurnPlayerId,
-      game_stage: newStage, deck: newDeck, community_cards: newCommunityCards
-    }).eq('id', tableId);
+    // Call showdown logic if the game is over
+    if (newStage === 'showdown') {
+      await handleShowdown(tableId, futurePlayers, newCommunityCards, newPot);
+    } else {
+      await supabase.from('poker_tables').update({
+        pot: newPot, highest_bet: newHighestBet, current_turn_player_id: nextTurnPlayerId,
+        game_stage: newStage, deck: newDeck, community_cards: newCommunityCards
+      }).eq('id', tableId);
+    }
   };
 
   const parseJSON = (data) => typeof data === 'string' ? JSON.parse(data) : (data || []);
@@ -199,19 +181,24 @@ export default function PlayPage() {
   if (tableId && tableState) {
     const myPlayer = playersState.find(p => p.player_id === userId);
     const opponents = playersState.filter(p => p.player_id !== userId);
-    const isMyTurn = tableState.current_turn_player_id === userId;
+    const isMyTurn = tableState.current_turn_player_id === userId && tableState.game_stage !== 'showdown';
     const myHoleCards = myPlayer ? parseJSON(myPlayer.hole_cards) : [];
     const communityCards = parseJSON(tableState.community_cards);
-    
-    // Dynamic Call/Check button
     const canCheck = myPlayer && tableState.highest_bet === myPlayer.current_bet;
 
     return (
       <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
         
+        {tableState.game_stage === 'showdown' && (
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/90 p-8 rounded-2xl border-4 border-yellow-500 z-50 text-center animate-bounce">
+            <h2 className="text-4xl font-bold text-yellow-400 mb-2">SHOWDOWN</h2>
+            <p className="text-xl">Winner takes the pot!</p>
+          </div>
+        )}
+
         <div className="flex flex-wrap justify-center gap-8 mb-8">
           {opponents.map((opp, i) => (
-            <div key={i} className={`bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 ${tableState.current_turn_player_id === opp.player_id ? 'border-yellow-400' : 'border-green-700'}`}>
+            <div key={i} className={`bg-green-900 p-4 rounded-lg shadow-xl text-center border-2 ${tableState.current_turn_player_id === opp.player_id && tableState.game_stage !== 'showdown' ? 'border-yellow-400' : 'border-green-700'}`}>
               <div className="flex justify-between items-center mb-1">
                 <p className="text-sm text-neutral-400">Seat {opp.seat_number}</p>
                 {opp.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
@@ -220,6 +207,15 @@ export default function PlayPage() {
               <p className="font-bold">Chips: {opp.chips}</p>
               {opp.current_bet > 0 && <p className="text-xs mt-1 text-yellow-400">Bet: {opp.current_bet}</p>}
               {opp.status === 'folded' && <p className="text-xs mt-1 text-red-400 font-bold">FOLDED</p>}
+              
+              {/* Show opponent cards ONLY at showdown if they didn't fold */}
+              {tableState.game_stage === 'showdown' && opp.status !== 'folded' && (
+                <div className="flex gap-1 mt-2 justify-center">
+                  {parseJSON(opp.hole_cards).map((card, index) => (
+                    <div key={index} className="bg-white text-black w-8 h-12 flex items-center justify-center text-sm font-bold rounded shadow">{card}</div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -230,7 +226,7 @@ export default function PlayPage() {
             <p className="text-center text-sm text-neutral-300 uppercase tracking-widest">{tableState.game_stage}</p>
           </div>
           
-          <div className="flex gap-2">
+          <div className="flex gap-2 min-h-[6rem]">
             {communityCards.length > 0 ? (
               communityCards.map((card, index) => (
                 <div key={index} className="bg-white text-black w-16 h-24 flex items-center justify-center text-2xl font-bold rounded shadow-lg border-2 border-neutral-300">
@@ -238,7 +234,7 @@ export default function PlayPage() {
                 </div>
               ))
             ) : (
-              <div className="text-neutral-400 italic">Preflop</div>
+              <div className="text-neutral-400 italic mt-4">Preflop</div>
             )}
           </div>
         </div>
@@ -246,12 +242,9 @@ export default function PlayPage() {
         {myPlayer && (
           <div className={`w-full max-w-2xl bg-neutral-900 p-6 rounded-t-2xl shadow-2xl border-t-4 ${isMyTurn ? 'border-yellow-400' : 'border-neutral-700'}`}>
             <div className="flex justify-between items-end">
-              
               <div>
                 <div className="flex gap-2 items-center mb-2">
                   <p className="text-sm text-neutral-400">My Stack: <span className="text-white font-bold">{myPlayer.chips}</span></p>
-                  {myPlayer.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
-                  {myPlayer.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
                 </div>
                 <div className="flex gap-2">
                   {myHoleCards.map((card, index) => (
@@ -266,40 +259,26 @@ export default function PlayPage() {
                 {isMyTurn ? (
                   <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
                 ) : (
-                  <div className="text-neutral-500 font-bold mb-1">Waiting for turn...</div>
+                  <div className="text-neutral-500 font-bold mb-1">
+                    {tableState.game_stage === 'showdown' ? 'Game Over' : 'Waiting for turn...'}
+                  </div>
                 )}
                 
                 <div className="flex gap-3">
-                  <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
-                    Fold
-                  </button>
-                  
-                  {/* Dynamic Call/Check Button */}
+                  <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Fold</button>
                   {canCheck ? (
-                    <button onClick={() => processAction('check')} disabled={!isMyTurn} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
-                      Check
-                    </button>
+                    <button onClick={() => processAction('check')} disabled={!isMyTurn} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Check</button>
                   ) : (
                     <button onClick={() => processAction('call')} disabled={!isMyTurn} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
-                      Call {tableState.highest_bet - myPlayer.current_bet}
+                      Call {tableState.highest_bet - myPlayer.current_bet > 0 ? tableState.highest_bet - myPlayer.current_bet : ''}
                     </button>
                   )}
-
                   <div className="flex overflow-hidden rounded shadow-lg">
-                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
-                      Raise To
-                    </button>
-                    <input 
-                      type="number" 
-                      value={raiseAmount}
-                      onChange={(e) => setRaiseAmount(Number(e.target.value))}
-                      disabled={!isMyTurn} 
-                      className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" 
-                    />
+                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">Raise To</button>
+                    <input type="number" value={raiseAmount} onChange={(e) => setRaiseAmount(Number(e.target.value))} disabled={!isMyTurn} className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" />
                   </div>
                 </div>
               </div>
-
             </div>
           </div>
         )}
@@ -314,10 +293,7 @@ export default function PlayPage() {
         {!inQueue ? (
           <button onClick={joinQueue} className="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded font-bold text-xl transition-colors">Play Now</button>
         ) : (
-          <div>
-            <div className="animate-pulse text-yellow-400 text-xl font-bold mb-4">Searching for table...</div>
-            <p className="text-neutral-400 mb-2">Players in queue: {queueCount}</p>
-          </div>
+          <div><div className="animate-pulse text-yellow-400 text-xl font-bold mb-4">Searching for table...</div></div>
         )}
       </div>
     </div>
