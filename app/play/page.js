@@ -42,9 +42,22 @@ export default function PlayPage() {
   const joinQueue = async () => {
     if (!userId) return alert("Please log in first!");
     
-    // Insert user into the queue table
-    await supabase.from('queue').insert([{ player_id: userId }]);
+    // 1. Try to insert the user, and catch any errors
+    const { error } = await supabase.from('queue').insert([{ player_id: userId }]);
+    
+    if (error) {
+      console.error("Failed to join queue:", error);
+      alert("Database blocked the request! Check your console.");
+      return; // Stop the function if it fails
+    }
+    
     setInQueue(true);
+
+    // 2. Fetch the initial count immediately so it doesn't say 0
+    const { count, error: countError } = await supabase.from('queue').select('*', { count: 'exact' });
+    if (!countError) {
+      setQueueCount(count);
+    }
   };
 
   // If the player has been assigned a table, show the Poker Table
