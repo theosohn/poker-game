@@ -13,7 +13,6 @@ export default function PlayPage() {
   const [tableState, setTableState] = useState(null);
   const [playersState, setPlayersState] = useState([]);
   
-  // Default the raise input to 10 (the size of the big blind)
   const [raiseAmount, setRaiseAmount] = useState(10);
   const timerRef = useRef(null);
 
@@ -123,21 +122,10 @@ export default function PlayPage() {
       myNewChips -= callAmount; myNewBet += callAmount; newPot += callAmount;
     } 
     else if (actionType === 'raise') {
-      // 1. Minimum raise check
-      if (betAmount < 1) {
-        alert("You must raise by at least 1 chip!");
-        return; 
-      }
-
-      // 2. Calculate the target bet ("Raise By" logic)
+      if (betAmount < 1) return alert("You must raise by at least 1 chip!");
       const targetBet = newHighestBet + betAmount;
       const totalToPutIn = targetBet - me.current_bet;
-      
-      // 3. Prevent raising with chips you don't have
-      if (totalToPutIn > myNewChips) {
-        alert("You don't have enough chips for that raise!");
-        return;
-      }
+      if (totalToPutIn > myNewChips) return alert("You don't have enough chips for that raise!");
 
       myNewChips -= totalToPutIn; myNewBet = targetBet; newHighestBet = targetBet; newPot += totalToPutIn;
       await supabase.from('table_players').update({ has_acted: false }).eq('table_id', tableId).neq('player_id', userId);
@@ -191,6 +179,56 @@ export default function PlayPage() {
     }
   };
 
+  // === NEXT HAND ENGINE ===
+  const startNextHand = async () => {
+    if (tableState.game_stage !== 'showdown') return;
+
+    // 1. Fetch current players (excluding those who busted out with < 10 chips)
+    const { data: currentPlayers } = await supabase.from('table_players').select('*').eq('table_id', tableId).order('seat_number');
+    const validPlayers = currentPlayers.filter(p => p.chips >= 10);
+    
+    if (validPlayers.length < 2) {
+      alert("Not enough players with chips to continue the game!");
+      return; 
+    }
+
+    // 2. Rotate Seats (Seat 1 shifts to the back of the line)
+    const sortedPlayers = [...validPlayers].sort((a, b) => a.seat_number - b.seat_number);
+    const oldDealer = sortedPlayers.shift();
+    sortedPlayers.push(oldDealer);
+
+    const rotatedPlayers = sortedPlayers.map((p, index) => ({
+      ...p,
+      seat_number: index + 1 // Reassign seats 1 to N sequentially
+    }));
+
+    // 3. Deal New Cards & Deduct Blinds
+    const deck = getShuffledDeck();
+    const isHeadsUp = rotatedPlayers.length === 2;
+    const firstTurnIndex = isHeadsUp ? 0 : (rotatedPlayers.length > 2 ? 2 : 0);
+    const firstTurnPlayerId = rotatedPlayers[firstTurnIndex].player_id;
+
+    for (let i = 0; i < rotatedPlayers.length; i++) {
+      const p = rotatedPlayers[i];
+      const holeCards = [deck[i * 2], deck[i * 2 + 1]];
+      let chips = p.chips;
+      let currentBet = 0;
+
+      if (p.seat_number === 1) { chips -= 5; currentBet = 5; } // Small Blind
+      if (p.seat_number === 2) { chips -= 10; currentBet = 10; } // Big Blind
+
+      await supabase.from('table_players').update({
+        seat_number: p.seat_number, hole_cards: holeCards, chips: chips, current_bet: currentBet, status: 'active', has_acted: false
+      }).eq('id', p.id);
+    }
+
+    // 4. Reset the Master Table State
+    await supabase.from('poker_tables').update({
+      pot: 15, highest_bet: 10, game_stage: 'preflop', community_cards: [],
+      deck: deck.slice(rotatedPlayers.length * 2), current_turn_player_id: firstTurnPlayerId
+    }).eq('id', tableId);
+  };
+
   const parseJSON = (data) => typeof data === 'string' ? JSON.parse(data) : (data || []);
 
   if (tableId && tableState) {
@@ -205,7 +243,7 @@ export default function PlayPage() {
       <div className="flex flex-col items-center justify-between min-h-screen bg-green-800 text-white py-12 px-4">
         
         {tableState.game_stage === 'showdown' && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/90 p-8 rounded-2xl border-4 border-yellow-500 z-50 text-center animate-bounce">
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/90 p-8 rounded-2xl border-4 border-yellow-500 z-50 text-center animate-bounce shadow-2xl">
             <h2 className="text-4xl font-bold text-yellow-400 mb-2">SHOWDOWN</h2>
             <p className="text-xl">Winner takes the pot!</p>
           </div>
@@ -259,6 +297,8 @@ export default function PlayPage() {
               <div>
                 <div className="flex gap-2 items-center mb-2">
                   <p className="text-sm text-neutral-400">My Stack: <span className="text-white font-bold">{myPlayer.chips}</span></p>
+                  {myPlayer.seat_number === 1 && <span className="bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded">SB</span>}
+                  {myPlayer.seat_number === 2 && <span className="bg-purple-800 text-white text-[10px] px-2 py-0.5 rounded">BB</span>}
                 </div>
                 <div className="flex gap-2">
                   {myHoleCards.map((card, index) => (
@@ -270,37 +310,46 @@ export default function PlayPage() {
               </div>
 
               <div className="flex flex-col items-end gap-3">
-                {isMyTurn ? (
-                  <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
+                {tableState.game_stage === 'showdown' ? (
+                  /* SHOWDOWN UI - Only Seat 1 can trigger the next hand */
+                  <div className="flex flex-col items-end">
+                    {myPlayer.seat_number === 1 ? (
+                      <button onClick={startNextHand} className="bg-purple-600 hover:bg-purple-700 px-8 py-4 rounded-xl font-bold transition-colors animate-pulse text-xl shadow-lg border-2 border-purple-400">
+                        Deal Next Hand
+                      </button>
+                    ) : (
+                      <p className="text-neutral-400 italic px-4 py-2 border-2 border-neutral-700 rounded bg-neutral-800">
+                        Waiting for Dealer (Seat 1) to start next hand...
+                      </p>
+                    )}
+                  </div>
                 ) : (
-                  <div className="text-neutral-500 font-bold mb-1">
-                    {tableState.game_stage === 'showdown' ? 'Game Over' : 'Waiting for turn...'}
-                  </div>
+                  /* REGULAR PLAYING UI */
+                  <>
+                    {isMyTurn ? (
+                      <div className="text-yellow-400 font-bold mb-1 animate-pulse">Your Turn!</div>
+                    ) : (
+                      <div className="text-neutral-500 font-bold mb-1">Waiting for turn...</div>
+                    )}
+                    
+                    <div className="flex gap-3">
+                      <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Fold</button>
+                      {canCheck ? (
+                        <button onClick={() => processAction('check')} disabled={!isMyTurn} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Check</button>
+                      ) : (
+                        <button onClick={() => processAction('call')} disabled={!isMyTurn} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
+                          Call {tableState.highest_bet - myPlayer.current_bet > 0 ? tableState.highest_bet - myPlayer.current_bet : ''}
+                        </button>
+                      )}
+                      <div className="flex overflow-hidden rounded shadow-lg">
+                        <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
+                          Raise By
+                        </button>
+                        <input type="number" min="1" value={raiseAmount} onChange={(e) => setRaiseAmount(Number(e.target.value))} disabled={!isMyTurn} className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" />
+                      </div>
+                    </div>
+                  </>
                 )}
-                
-                <div className="flex gap-3">
-                  <button onClick={() => processAction('fold')} disabled={!isMyTurn} className="bg-red-600 hover:bg-red-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Fold</button>
-                  {canCheck ? (
-                    <button onClick={() => processAction('check')} disabled={!isMyTurn} className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">Check</button>
-                  ) : (
-                    <button onClick={() => processAction('call')} disabled={!isMyTurn} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-6 py-3 rounded font-bold transition-colors">
-                      Call {tableState.highest_bet - myPlayer.current_bet > 0 ? tableState.highest_bet - myPlayer.current_bet : ''}
-                    </button>
-                  )}
-                  <div className="flex overflow-hidden rounded shadow-lg">
-                    <button onClick={() => processAction('raise', raiseAmount)} disabled={!isMyTurn} className="bg-yellow-500 hover:bg-yellow-600 text-black disabled:opacity-50 px-6 py-3 font-bold transition-colors">
-                      Raise By
-                    </button>
-                    <input 
-                      type="number" 
-                      min="1"
-                      value={raiseAmount} 
-                      onChange={(e) => setRaiseAmount(Number(e.target.value))} 
-                      disabled={!isMyTurn} 
-                      className="w-20 px-2 text-black outline-none border-l-2 border-yellow-600 disabled:opacity-50" 
-                    />
-                  </div>
-                </div>
               </div>
             </div>
           </div>
